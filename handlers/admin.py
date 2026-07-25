@@ -15,6 +15,7 @@ from telegram.ext import (
 from config import config
 from database import (
     ActivationCode,
+    CarouselMessage,
     Group,
     GroupMember,
     ModLog,
@@ -103,7 +104,7 @@ async def on_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=carousel_list_menu([], 0),
             )
         else:
-            text = "📣 <b>轮播消息管理</b>\n\n共 {len(carousels)} 条轮播：\n"
+            text = f"📣 <b>轮播消息管理</b>\n\n共 {len(carousels)} 条轮播：\n"
             for i, c in enumerate(carousels, 1):
                 status = "✅" if c.enabled else "⏸️"
                 text += f"\n{i}. {status} <b>{c.name}</b> | {c.carousel_type.value} | 每{c.interval}秒"
