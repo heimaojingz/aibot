@@ -130,6 +130,7 @@ async def on_start_callback(update, context):
     q = update.callback_query
     await q.answer()
     action = q.data.split(":")[1]
+    user = q.from_user
     logger.info(f"START_CB action={action}")
 
     if action == "my_groups":
