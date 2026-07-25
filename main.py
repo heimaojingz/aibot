@@ -206,7 +206,7 @@ async def on_start_callback(update, context):
                 await q.answer("群组不存在", show_alert=True)
                 return
             user = q.from_user
-            if group.owner_id and group.owner_id != user.id and user.id not in config.SUPER_ADMIN_IDS:
+            if (group.owner_id is None and user.id not in config.SUPER_ADMIN_IDS) or (group.owner_id and group.owner_id != user.id and user.id not in config.SUPER_ADMIN_IDS):
                 await q.answer(chr(20320)+chr(27809)+chr(26377)+chr(26435)+chr(38480)+chr(31649)+chr(29702)+chr(27492)+chr(32676)+chr(32452), show_alert=True)
                 return
             gsr = await s.execute(select(GroupSettings).where(GroupSettings.group_id == gid))
