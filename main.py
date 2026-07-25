@@ -80,7 +80,7 @@ async def cmd_start(update, context):
     async with get_session() as s:
         from sqlalchemy import select, func
         from database import Group
-        r = await s.execute(select(func.count(Group.id)).where(Group.is_active == True))
+        r = await s.execute(select(func.count(Group.id)).where(Group.is_active == True, Group.owner_id == user.id))
         gc = r.scalar() or 0
         is_adm = user.id in config.SUPER_ADMIN_IDS
 
@@ -136,7 +136,7 @@ async def on_start_callback(update, context):
         async with get_session() as s:
             from sqlalchemy import select
             from database import Group
-            r = await s.execute(select(Group).where(Group.is_active == True).order_by(Group.id))
+            r = await s.execute(select(Group).where(Group.is_active == True, Group.owner_id == user.id).order_by(Group.id))
             groups = list(r.scalars().all())
 
         if not groups:
@@ -205,6 +205,10 @@ async def on_start_callback(update, context):
             if not group:
                 await q.answer("群组不存在", show_alert=True)
                 return
+            user = q.from_user
+            if group.owner_id and group.owner_id != user.id and user.id not in config.SUPER_ADMIN_IDS:
+                await q.answer(chr(20320)+chr(27809)+chr(26377)+chr(26435)+chr(38480)+chr(31649)+chr(29702)+chr(27492)+chr(32676)+chr(32452), show_alert=True)
+                return
             gsr = await s.execute(select(GroupSettings).where(GroupSettings.group_id == gid))
             gs = gsr.scalar_one_or_none()
             air = await s.execute(select(AIConfig).where(AIConfig.group_id == gid))
@@ -258,7 +262,7 @@ async def on_start_callback(update, context):
         async with get_session() as s:
             from sqlalchemy import select, func
             from database import Group
-            r = await s.execute(select(func.count(Group.id)).where(Group.is_active == True))
+            r = await s.execute(select(func.count(Group.id)).where(Group.is_active == True, Group.owner_id == user.id))
             gc = r.scalar() or 0
             is_adm = user.id in config.SUPER_ADMIN_IDS
         text = (
@@ -305,6 +309,7 @@ async def on_group_config_callback(update, context):
     parts = q.data.split(":")
     action = parts[1]
     gid = int(parts[2])
+    user = q.from_user
     logger.info(f"GRPCFG action={action} group={gid}")
 
     async with get_session() as s:
@@ -317,6 +322,13 @@ async def on_group_config_callback(update, context):
             gs = GroupSettings(group_id=gid)
             s.add(gs)
             await s.commit()
+
+        # Check ownership
+        gr = await s.execute(select(Group).where(Group.id == gid))
+        group = gr.scalar_one_or_none()
+        if group and group.owner_id and group.owner_id != user.id and user.id not in config.SUPER_ADMIN_IDS:
+            await q.answer(chr(20320)+chr(27809)+chr(26377)+chr(26435)+chr(38480)+chr(31649)+chr(29702)+chr(27492)+chr(32676)+chr(32452), show_alert=True)
+            return
 
         if action == "welcome":
             wcr = await s.execute(select(WelcomeConfig).where(WelcomeConfig.group_id == gid))
