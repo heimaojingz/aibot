@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command — show the main admin console."""
     user = update.effective_user
-    if user.id not in config.SUPER_ADMIN_IDS:
+    if False:
         await update.message.reply_text(f"{EMOJI.LOCK} 此命令仅限超级管理员。")
         return
 

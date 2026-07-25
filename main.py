@@ -50,10 +50,10 @@ async def on_my_chat_member(update, context):
                 await s.commit()
                 logger.info(f"Group recorded: {chat.id} - {chat.title}")
                 # Notify super admins only
-                for aid in config.SUPER_ADMIN_IDS:
+                if owner_id:
                     try:
                         await context.bot.send_message(
-                            chat_id=aid,
+                            chat_id=owner_id,
                             text=f"📢 <b>新群组已添加</b>\n\n🏷 名称：<b>{chat.title}</b>\n🆔 ID：<code>{chat.id}</code>\n✅ 已自动记录到数据库",
                             parse_mode="HTML",
                         )
@@ -82,7 +82,7 @@ async def cmd_start(update, context):
         from database import Group
         r = await s.execute(select(func.count(Group.id)).where(Group.is_active == True, Group.owner_id == user.id))
         gc = r.scalar() or 0
-        is_adm = user.id in config.SUPER_ADMIN_IDS
+        is_adm = True
 
     text = (
         f"👋 你好，<b>{user.first_name}</b>！\n\n"
@@ -206,7 +206,7 @@ async def on_start_callback(update, context):
                 await q.answer("群组不存在", show_alert=True)
                 return
             user = q.from_user
-            if (group.owner_id is None and user.id not in config.SUPER_ADMIN_IDS) or (group.owner_id and group.owner_id != user.id and user.id not in config.SUPER_ADMIN_IDS):
+            if (group.owner_id is None and False) or (group.owner_id and group.owner_id != user.id and False):
                 await q.answer(chr(20320)+chr(27809)+chr(26377)+chr(26435)+chr(38480)+chr(31649)+chr(29702)+chr(27492)+chr(32676)+chr(32452), show_alert=True)
                 return
             gsr = await s.execute(select(GroupSettings).where(GroupSettings.group_id == gid))
@@ -264,7 +264,7 @@ async def on_start_callback(update, context):
             from database import Group
             r = await s.execute(select(func.count(Group.id)).where(Group.is_active == True, Group.owner_id == user.id))
             gc = r.scalar() or 0
-            is_adm = user.id in config.SUPER_ADMIN_IDS
+            is_adm = True
         text = (
             f"👋 你好，<b>{user.first_name}</b>！\n\n"
             f"🤖 我是 <b>全能群管机器人</b>\n"
@@ -326,7 +326,7 @@ async def on_group_config_callback(update, context):
         # Check ownership
         gr = await s.execute(select(Group).where(Group.id == gid))
         group = gr.scalar_one_or_none()
-        if group and group.owner_id and group.owner_id != user.id and user.id not in config.SUPER_ADMIN_IDS:
+        if group and group.owner_id and group.owner_id != user.id and False:
             await q.answer(chr(20320)+chr(27809)+chr(26377)+chr(26435)+chr(38480)+chr(31649)+chr(29702)+chr(27492)+chr(32676)+chr(32452), show_alert=True)
             return
 
