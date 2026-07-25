@@ -87,9 +87,27 @@ async def _build_welcome_text(wc: WelcomeConfig, user_mention: str, group_title:
 # ── Handler: new member joins ───────────────────────────────────────────────
 
 async def on_new_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Triggered when one or more users join the group."""
+    """Triggered when a user joins the group (ChatMemberHandler)."""
     chat = update.effective_chat
     if not chat or chat.type == "private":
+        return
+
+    # ChatMemberHandler: get the joining user from chat_member update
+    chat_member_update = update.chat_member
+    if not chat_member_update:
+        return
+
+    old_status = chat_member_update.old_chat_member.status
+    new_status = chat_member_update.new_chat_member.status
+    new_member = chat_member_update.new_chat_member.user
+
+    # Only process actual joins (not admin promotions or other status changes)
+    if new_status not in ("member", "restricted"):
+        return
+    if old_status in ("member", "administrator", "creator"):
+        return
+
+    if new_member.is_bot:
         return
 
     async with get_session() as session:
@@ -99,115 +117,118 @@ async def on_new_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not wc.enabled:
             return
 
-        for new_member in update.message.new_chat_members:
-            if new_member.is_bot:
-                continue
+        user_mention = new_member.mention_html()
+        nice_name = new_member.full_name
 
-            user_mention = new_member.mention_html()
-            nice_name = new_member.full_name
+        # Persist user and member
+        user = await _ensure_user(
+            session, new_member.id,
+            new_member.username or "",
+            new_member.first_name or "",
+        )
+        gm = GroupMember(
+            user_id=new_member.id,
+            group_id=chat.id,
+        )
+        session.add(gm)
+        await session.commit()
 
-            # Persist user and member
-            user = await _ensure_user(
-                session, new_member.id,
-                new_member.username or "",
-                new_member.first_name or "",
-            )
-            gm = GroupMember(
-                user_id=new_member.id,
-                group_id=chat.id,
-            )
-            session.add(gm)
-            await session.commit()
+        welcome_text = await _build_welcome_text(wc, user_mention, chat.title)
 
-            welcome_text = await _build_welcome_text(wc, user_mention, chat.title)
-
-            # Build reply markup
-            reply_markup = None
-            if wc.captcha_enabled:
-                # Generate CAPTCHA
-                captcha_type = wc.captcha_type or "button"
-                if captcha_type == "math":
-                    a = random.randint(1, 20)
-                    b = random.randint(1, 20)
-                    correct = a + b
-                    _captcha_store[(new_member.id, chat.id)] = {
-                        "answer": correct,
-                        "expires": time.time() + config.CAPTCHA_TIMEOUT,
-                        "type": "math",
-                    }
-                    welcome_text += (
-                        f"\n\n🤖 <b>人机验证</b>\n"
-                        f"请回答：<code>{a} + {b} = ?</code>\n"
-                        f"⏰ 请在 {config.CAPTCHA_TIMEOUT} 秒内完成"
-                    )
-                    reply_markup = captcha_math_keyboard(
-                        new_member.id, chat.id, correct
-                    )
-                else:
-                    _captcha_store[(new_member.id, chat.id)] = {
-                        "answer": 1,
-                        "expires": time.time() + config.CAPTCHA_TIMEOUT,
-                        "type": "button",
-                    }
-                    welcome_text += (
-                        f"\n\n🤖 <b>人机验证</b>\n"
-                        f"请点击下方按钮完成验证\n"
-                        f"⏰ 请在 {config.CAPTCHA_TIMEOUT} 秒内完成"
-                    )
-                    reply_markup = captcha_button_keyboard(new_member.id, chat.id)
-            else:
-                # Just custom buttons
-                rows = parse_buttons(wc.buttons)
-                if rows:
-                    reply_markup = InlineKeyboardMarkup(rows)
-
-            # Send welcome message (with or without media)
-            sent_msg: Message | None = None
-            try:
-                if wc.media_file_id and wc.media_type:
-                    if wc.media_type == "photo":
-                        sent_msg = await update.message.reply_photo(
-                            photo=wc.media_file_id,
-                            caption=welcome_text,
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=reply_markup,
-                        )
-                    elif wc.media_type == "video":
-                        sent_msg = await update.message.reply_video(
-                            video=wc.media_file_id,
-                            caption=welcome_text,
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=reply_markup,
-                        )
-                    elif wc.media_type == "animation":
-                        sent_msg = await update.message.reply_animation(
-                            animation=wc.media_file_id,
-                            caption=welcome_text,
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=reply_markup,
-                        )
-                    else:
-                        sent_msg = await update.message.reply_html(
-                            welcome_text, reply_markup=reply_markup
-                        )
-                else:
-                    sent_msg = await update.message.reply_html(
-                        welcome_text, reply_markup=reply_markup
-                    )
-
-                # Auto-delete scheduling
-                if sent_msg and wc.auto_delete_after > 0:
-                    context.job_queue.run_once(
-                        _delete_welcome_message,
-                        when=wc.auto_delete_after,
-                        data={"chat_id": chat.id, "message_id": sent_msg.message_id},
-                    )
-
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(
-                    f"Failed to send welcome message: {e}"
+        # Build reply markup
+        reply_markup = None
+        if wc.captcha_enabled:
+            captcha_type = wc.captcha_type or "button"
+            if captcha_type == "math":
+                a = random.randint(1, 20)
+                b = random.randint(1, 20)
+                correct = a + b
+                _captcha_store[(new_member.id, chat.id)] = {
+                    "answer": correct,
+                    "expires": time.time() + config.CAPTCHA_TIMEOUT,
+                    "type": "math",
+                }
+                welcome_text += (
+                    f"\n\n\U0001f9ee <b>\u4eba\u673a\u9a8c\u8bc1</b>\n"
+                    f"\u8bf7\u56de\u7b54\uff1a<code>{a} + {b} = ?</code>\n"
+                    f"\u23f0 \u8bf7\u5728 {config.CAPTCHA_TIMEOUT} \u79d2\u5185\u5b8c\u6210"
                 )
+                reply_markup = captcha_math_keyboard(
+                    new_member.id, chat.id, correct
+                )
+            else:
+                _captcha_store[(new_member.id, chat.id)] = {
+                    "answer": 1,
+                    "expires": time.time() + config.CAPTCHA_TIMEOUT,
+                    "type": "button",
+                }
+                welcome_text += (
+                    f"\n\n\U0001f9ee <b>\u4eba\u673a\u9a8c\u8bc1</b>\n"
+                    f"\u8bf7\u70b9\u51fb\u4e0b\u65b9\u6309\u94ae\u5b8c\u6210\u9a8c\u8bc1\n"
+                    f"\u23f0 \u8bf7\u5728 {config.CAPTCHA_TIMEOUT} \u79d2\u5185\u5b8c\u6210"
+                )
+                reply_markup = captcha_button_keyboard(new_member.id, chat.id)
+        else:
+            rows = parse_buttons(wc.buttons)
+            if rows:
+                reply_markup = InlineKeyboardMarkup(rows)
+
+        # Send welcome message (with or without media)
+        sent_msg: Message | None = None
+        try:
+            if wc.media_file_id and wc.media_type:
+                if wc.media_type == "photo":
+                    sent_msg = await context.bot.send_photo(
+                        chat_id=chat.id,
+                        photo=wc.media_file_id,
+                        caption=welcome_text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                    )
+                elif wc.media_type == "video":
+                    sent_msg = await context.bot.send_video(
+                        chat_id=chat.id,
+                        video=wc.media_file_id,
+                        caption=welcome_text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                    )
+                elif wc.media_type == "animation":
+                    sent_msg = await context.bot.send_animation(
+                        chat_id=chat.id,
+                        animation=wc.media_file_id,
+                        caption=welcome_text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                    )
+                else:
+                    sent_msg = await context.bot.send_message(
+                        chat_id=chat.id,
+                        text=welcome_text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                    )
+            else:
+                sent_msg = await context.bot.send_message(
+                    chat_id=chat.id,
+                    text=welcome_text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                )
+
+            # Auto-delete scheduling
+            if sent_msg and wc.auto_delete_after > 0:
+                context.job_queue.run_once(
+                    _delete_welcome_message,
+                    when=wc.auto_delete_after,
+                    data={"chat_id": chat.id, "message_id": sent_msg.message_id},
+                )
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(
+                f"Failed to send welcome message: {e}"
+            )
 
 
 async def _delete_welcome_message(context: ContextTypes.DEFAULT_TYPE):
@@ -250,7 +271,7 @@ async def on_captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Check if it's the right user clicking
     if query.from_user.id != callback_user_id:
         await query.answer(
-            f"⚠️ 此验证不属于你，请等待你自己的验证消息。",
+            f"⚠️ 此验证不属于你，请等待你自己的验证消息�?,
             show_alert=True,
         )
         return
@@ -260,7 +281,7 @@ async def on_captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     captcha_entry = _captcha_store.get(key)
     if not captcha_entry:
         await query.edit_message_text(
-            f"{EMOJI.CROSS} 验证已过期或不存在。",
+            f"{EMOJI.CROSS} 验证已过期或不存在�?,
             parse_mode=ParseMode.HTML,
         )
         return
@@ -268,7 +289,7 @@ async def on_captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     if time.time() > captcha_entry["expires"]:
         _captcha_store.pop(key, None)
         await query.edit_message_text(
-            f"{EMOJI.CROSS} 验证超时，你已被移出群组。",
+            f"{EMOJI.CROSS} 验证超时，你已被移出群组�?,
             parse_mode=ParseMode.HTML,
         )
         try:
@@ -291,7 +312,7 @@ async def on_captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
     else:
         await query.answer(
-            f"{EMOJI.CROSS} 回答错误，请重试！",
+            f"{EMOJI.CROSS} 回答错误，请重试�?,
             show_alert=True,
         )
 
@@ -299,35 +320,35 @@ async def on_captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ── Handler: welcome config command ─────────────────────────────────────────
 
 async def cmd_welcome_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /welcome command in groups — show welcome settings."""
+    """Handle /welcome command in groups �?show welcome settings."""
     chat = update.effective_chat
     user = update.effective_user
 
     if chat.type == "private":
-        await update.message.reply_text("请在群组中使用此命令。")
+        await update.message.reply_text("请在群组中使用此命令�?)
         return
 
     # Check if user is admin
     member = await chat.get_member(user.id)
     if member.status not in ("creator", "administrator"):
         await update.message.reply_text(
-            f"{EMOJI.LOCK} 此命令仅限群管理员使用。"
+            f"{EMOJI.LOCK} 此命令仅限群管理员使用�?
         )
         return
 
     async with get_session() as session:
         wc = await _ensure_welcome_config(session, chat.id)
-        status = "✅ 已启用" if wc.enabled else "❌ 已关闭"
-        captcha = "✅ 已启用" if wc.captcha_enabled else "❌ 已关闭"
-        media = f"📎 {wc.media_type}" if wc.media_file_id else "无媒体"
+        status = "�?已启�? if wc.enabled else "�?已关�?
+        captcha = "�?已启�? if wc.captcha_enabled else "�?已关�?
+        media = f"📎 {wc.media_type}" if wc.media_file_id else "无媒�?
 
         text = (
             f"{EMOJI.BELL} <b>欢迎系统设置</b>\n\n"
-            f"▸ 状态：{status}\n"
-            f"▸ 验证码：{captcha}\n"
-            f"▸ 媒体附件：{media}\n"
-            f"▸ 自动删除：{wc.auto_delete_after} 秒后\n"
-            f"▸ 欢迎模板：\n<blockquote expandable>{wc.message_template[:200]}</blockquote>"
+            f"�?状态：{status}\n"
+            f"�?验证码：{captcha}\n"
+            f"�?媒体附件：{media}\n"
+            f"�?自动删除：{wc.auto_delete_after} 秒后\n"
+            f"�?欢迎模板：\n<blockquote expandable>{wc.message_template[:200]}</blockquote>"
         )
 
         from keyboards import welcome_config_menu
@@ -372,10 +393,10 @@ async def on_welcome_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         elif action == "edit_text":
             await query.edit_message_text(
                 f"{EMOJI.EDIT} 请发送新的欢迎消息模板：\n\n"
-                f"<i>可用变量：</i>\n"
-                f"• <code>{'{user_mention}'}</code> - 用户mention\n"
-                f"• <code>{'{group_title}'}</code> - 群名称\n\n"
-                f"发送 <code>/cancel</code> 取消操作",
+                f"<i>可用变量�?/i>\n"
+                f"�?<code>{'{user_mention}'}</code> - 用户mention\n"
+                f"�?<code>{'{group_title}'}</code> - 群名称\n\n"
+                f"发�?<code>/cancel</code> 取消操作",
                 parse_mode=ParseMode.HTML,
             )
             context.user_data["awaiting_welcome_text"] = group_id
@@ -384,7 +405,7 @@ async def on_welcome_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data["awaiting_welcome_media"] = group_id
             await query.edit_message_text(
                 f"{EMOJI.PHOTO} 请发送一张图片、视频或 GIF 作为欢迎媒体附件。\n\n"
-                f"发送 <code>/cancel</code> 取消操作",
+                f"发�?<code>/cancel</code> 取消操作",
                 parse_mode=ParseMode.HTML,
             )
 
@@ -392,9 +413,9 @@ async def on_welcome_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data["awaiting_welcome_delete"] = group_id
             await query.edit_message_text(
                 f"{EMOJI.CLOCK} 请发送自动删除倒计时（秒）：\n"
-                f"• 0 = 永不删除\n"
-                f"• 300 = 5分钟后删除\n\n"
-                f"发送 <code>/cancel</code> 取消操作",
+                f"�?0 = 永不删除\n"
+                f"�?300 = 5分钟后删除\n\n"
+                f"发�?<code>/cancel</code> 取消操作",
                 parse_mode=ParseMode.HTML,
             )
 
@@ -405,7 +426,7 @@ async def on_welcome_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"示例：\n"
                 f'<code>[[{{"text":"📜 群规","url":"https://t.me"}},'
                 f'{{"text":"📞 客服","url":"https://t.me/admin"}}]]</code>\n\n'
-                f"发送 <code>/cancel</code> 取消操作",
+                f"发�?<code>/cancel</code> 取消操作",
                 parse_mode=ParseMode.HTML,
             )
 
@@ -422,7 +443,7 @@ async def on_welcome_text_input(update: Update, context: ContextTypes.DEFAULT_TY
         for key in list(context.user_data.keys()):
             if key.startswith("awaiting_welcome_"):
                 del context.user_data[key]
-        await msg.reply_text(f"{EMOJI.CHECK} 已取消操作。")
+        await msg.reply_text(f"{EMOJI.CHECK} 已取消操作�?)
         return
 
     if "awaiting_welcome_text" in context.user_data:
@@ -441,9 +462,9 @@ async def on_welcome_text_input(update: Update, context: ContextTypes.DEFAULT_TY
                 wc = await _ensure_welcome_config(session, group_id)
                 wc.auto_delete_after = seconds
                 await session.commit()
-            await msg.reply_text(f"{EMOJI.CHECK} 自动删除时间已设置为 {seconds} 秒。")
+            await msg.reply_text(f"{EMOJI.CHECK} 自动删除时间已设置为 {seconds} 秒�?)
         except ValueError:
-            await msg.reply_text(f"{EMOJI.CROSS} 请输入有效的数字。")
+            await msg.reply_text(f"{EMOJI.CROSS} 请输入有效的数字�?)
 
 
 # ── Handler: media input for welcome ────────────────────────────────────────
@@ -469,7 +490,7 @@ async def on_welcome_media_input(update: Update, context: ContextTypes.DEFAULT_T
         file_id = msg.animation.file_id
         media_type = "animation"
     else:
-        await msg.reply_text(f"{EMOJI.CROSS} 请发送图片、视频或 GIF。操作已取消。")
+        await msg.reply_text(f"{EMOJI.CROSS} 请发送图片、视频或 GIF。操作已取消�?)
         return
 
     async with get_session() as session:
@@ -478,7 +499,7 @@ async def on_welcome_media_input(update: Update, context: ContextTypes.DEFAULT_T
         wc.media_type = media_type
         await session.commit()
 
-    await msg.reply_text(f"{EMOJI.CHECK} 欢迎媒体附件已更新为 {media_type}！")
+    await msg.reply_text(f"{EMOJI.CHECK} 欢迎媒体附件已更新为 {media_type}�?)
 
 
 # ── Handler: button JSON input for welcome ──────────────────────────────────
@@ -494,7 +515,7 @@ async def on_welcome_buttons_input(update: Update, context: ContextTypes.DEFAULT
     try:
         json.loads(msg.text)
     except json.JSONDecodeError:
-        await msg.reply_text(f"{EMOJI.CROSS} JSON 格式无效，操作已取消。")
+        await msg.reply_text(f"{EMOJI.CROSS} JSON 格式无效，操作已取消�?)
         return
 
     async with get_session() as session:
