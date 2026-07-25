@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+bot_data.db
+.env
+*.log
+_debug_*.txt
+_fix_*.py
+_gen_fix.py
+_analyze.py
+_step1.py
+_fix_all.py
+_fixer.py
+node_modules/
